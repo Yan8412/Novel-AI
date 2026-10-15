@@ -18,6 +18,18 @@
 
 提交前执行 `npm run repo:check`。它扫描实际 Git 暂存区的文件白名单、文件大小、密钥模式和脱敏配置；这是一道防误传门禁，不是完整秘密审计的替代品。
 
+每次新克隆或换机后，在项目根目录执行 `node scripts/install-git-hooks.mjs`（或 `npm run hooks:install`）。安装只设置此仓库的 `core.hooksPath=.githooks` 和本机 Node 路径，不覆盖其他已有钩子、不存储凭据、不自动运行依赖安装脚本。换 Mac 或移动 Node 后重新安装即可；Git 不会自动启用克隆仓库中的钩子。
+
+安装后，普通 `git push` 会自动运行 `scripts/check-push.mjs`：
+
+- 对本次每个非删除分支/标签，保守检查**全部可达历史**（包括已在远端的祖先），不是只看当前文件或暂存区；检查每个历史文件版本、全部合并父提交、提交元数据及嵌套标签说明。多引用推送中任意一项不安全，整次推送被阻止。
+- 沿用源码路径白名单，拒绝作品、数据库、备份、符号链接、子模块、二进制及超过 2 MiB 的源码对象；检测常见密钥、明文凭据赋值、Bearer 字面量及改名后的多章小说正文特征。固定测试占位值 `isolated-test-only` 仅在泛化赋值规则中豁免，不能豁免其他密钥。
+- 敏感文件即使随后删除，仍会按提交哈希和路径报告并阻止。发现问题后应清理所有受影响的未发布提交；不要只再做一次删除提交，不要为通过检查改用跳过验证。若凭据曾外泄，仍须撤销/轮换。
+- 浅克隆、grafts、缺失对象、解析错误或检查器/Node 不可用时拒绝推送；禁用 replace 对象及隐式拉取，避免隐藏历史或在检查中自动联网。只删除远端引用或没有引用变化时不上传对象，可直接通过。
+- 测试用 `npm run test:push-safety`，仅操作自动创建的本地隔离仓库及 bare 远端，不向 GitHub 上传测试样例。
+
+这是默认自动防误传门禁，不是不可绕过的服务端安全边界：`--no-verify`、修改钩子/配置或通过其他工具直接上传都能绕过它。已识别的私有文件与密钥会被拦截，但无法证明所有伪装在源码中的小说、未知格式/编码的秘密都能识别。全历史检查有意更严格，历史越大耗时越长；没有持久化“已通过”缓存。不要将通过提示解释为完整秘密审计。
+
 不使用 Git LFS 或同步盘实时同步活动 SQLite 数据库。运行中的数据库不能被两台电脑通过共享文件夹同时写入。
 
 ## 2. 两个系统使用同一套代码
@@ -29,6 +41,7 @@ Windows PowerShell：
 ```powershell
 node --version
 npm ci --ignore-scripts
+node scripts/install-git-hooks.mjs
 node scripts/verify.mjs
 $env:OPENAI_MODEL="gpt-6-astra"
 npm start
@@ -39,6 +52,7 @@ macOS Terminal（zsh）：
 ```zsh
 node --version
 npm ci --ignore-scripts
+node scripts/install-git-hooks.mjs
 node scripts/verify.mjs
 export OPENAI_MODEL="gpt-6-astra"
 npm start

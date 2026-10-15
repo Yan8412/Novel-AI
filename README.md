@@ -47,6 +47,8 @@ Windows 用户也可以双击 `start-novel-studio.cmd`。该脚本会读取通�
 
 ## 验证与构建
 
+源码推送保护：首次克隆或换机后执行 `node scripts/install-git-hooks.mjs`。之后普通 `git push` 会自动检查所有待推送分支/标签的完整可达历史，敏感文件先提交再删除也会被阻止；不会上传被检查的正文或密钥。`npm run test:push-safety` 用隔离本地仓库验证真实推送。检查失败须先修正历史，不能只删除当前文件。检测范围、误报边界及本地钩子可绕过的限制见迁移文档；GitHub 网页/API 上传不经过本机钩子。
+
 ```powershell
 npm run check
 npm test

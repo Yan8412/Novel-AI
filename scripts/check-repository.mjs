@@ -6,19 +6,33 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const rootFiles=new Set([".gitignore",".gitattributes",".node-version",".env.example","README.md","package.json","package-lock.json","server.mjs","service-runner.mjs","start-novel-studio.cmd","start-novel-studio-hidden.vbs"]);
+export function auditSecrets(text) {
+  const issues=[];
+  for(const [name,pattern] of [
+    ["provider token",/\b(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[A-Z0-9]{16})\b/],
+    ["private key",/-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/],
+    ["credential in URL",/https?:\/\/[^\s/:@]+:[^\s/@]+@/],
+    ["literal credential assignment",/\b(?:[A-Z][A-Z0-9_]*_)?(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|CLIENT[_-]?SECRET|PASSWORD)["']?[ \t]*[:=][ \t]*["'](?!isolated-test-only["'])[A-Za-z0-9_+/.=-]{16,}["']/i],
+    ["environment credential assignment",/^[ \t]*(?:export[ \t]+)?(?:[A-Z][A-Z0-9_]*_)?(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|CLIENT[_-]?SECRET|PASSWORD)[ \t]*=[ \t]*(?!isolated-test-only[ \t]*$)[A-Za-z0-9_+/.=-]{16,}[ \t]*$/im],
+    ["nonempty authentication token map",/\bNOVEL_AUTH_TOKENS_JSON[ \t]*=[ \t]*["']?\{[ \t]*["'][^\r\n]+/],
+    ["literal bearer credential",/\bBearer[ \t]+[A-Za-z0-9_+/.=-]{20,}/i],
+  ])if(pattern.test(text))issues.push(name);
+  return issues;
+}
 export function auditBlob(path,bytes,mode="100644") {
   const issues=[];
-  const allowed=rootFiles.has(path)||/^lib\/[\w-]+\.mjs$/.test(path)||/^public\/[\w-]+\.(?:js|mjs|html|svg)$/.test(path)||/^(?:scripts|tests)\/[\w.-]+\.(?:mjs|py)$/.test(path)||/^scripts\/requirements-memory(?:\.lock)?\.txt$/.test(path)||/^docs\/[\w-]+\.md$/.test(path)||/^\.github\/workflows\/[\w-]+\.ya?ml$/.test(path);
+  issues.push(...auditSecrets(path).map(issue=>`filename contains ${issue}`));
+  const allowed=rootFiles.has(path)||path===".githooks/pre-push"||/^lib\/[\w-]+\.mjs$/.test(path)||/^public\/[\w-]+\.(?:js|mjs|html|svg)$/.test(path)||/^(?:scripts|tests)\/[\w.-]+\.(?:mjs|py)$/.test(path)||/^scripts\/requirements-memory(?:\.lock)?\.txt$/.test(path)||/^docs\/[\w-]+\.md$/.test(path)||/^\.github\/workflows\/[\w-]+\.ya?ml$/.test(path);
   if(!allowed)issues.push("not in reviewed source allowlist");
   if(!["100644","100755"].includes(mode))issues.push("symlink or submodule is not allowed");
   if(bytes.length>2*1024*1024)issues.push("source exceeds 2 MiB");
   if(bytes.includes(0))issues.push("binary data is not allowed");
   const text=bytes.toString("utf8");
-  for(const [name,pattern] of [
-    ["provider token",/\b(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[A-Z0-9]{16})\b/],
-    ["private key",/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
-    ["credential in URL",/https?:\/\/[^\s/:@]+:[^\s/@]+@/],
-  ])if(pattern.test(text))issues.push(name);
+  issues.push(...auditSecrets(text));
+  // Catch exported chapter prose renamed to a source/document extension. This is
+  // deliberately a heuristic, not a claim to identify all private prose.
+  const chapterHeadings=text.match(/^\s*(?:#{1,6}\s+)?第[0-9零〇一二三四五六七八九十百千万两]{1,12}[章回]\s*[^\r\n]{0,60}$/gm)||[];
+  if(chapterHeadings.length>=2&&(text.match(/[\u3400-\u9fff]/g)||[]).length>=1000)issues.push("chapter manuscript content");
   if(path===".env.example")for(const line of text.split(/\r?\n/)){
     const assignment=line.trim().replace(/^export\s+/,"").match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
     if(assignment&&["OPENAI_API_KEY","NOVEL_AUTH_TOKENS_JSON"].includes(assignment[1])&&!((assignment[1]==="OPENAI_API_KEY"&&assignment[2]==="")||(assignment[1]==="NOVEL_AUTH_TOKENS_JSON"&&assignment[2]==="{}")))issues.push("example contains a nonempty credential field");

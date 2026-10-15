@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installation pins the current machine's Node outside the tracked source.
+node_path=$(git config --local --get novelStudio.hookNode) || node_path=node
+exec "$node_path" scripts/check-push.mjs "$@"
