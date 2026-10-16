@@ -2,17 +2,16 @@
 import assert from 'node:assert/strict';
 import {mkdirSync,writeFileSync} from 'node:fs';
 import {join,resolve} from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {browserFixture,browserTools,managedBrowser} from './browser-support.mjs';
 import {randomUUID} from 'node:crypto';
 import {withPlans} from '../tests/planning-fixtures.mjs';
-const base=process.env.NOVEL_BROWSER_URL,dir=resolve(process.env.NOVEL_UI_REPORT_DIR||'output/verification/ui-regression'),run=randomUUID().slice(0,8);
-assert.match(base,/^http:\/\/127\.0\.0\.1:\d+$/);assert.equal((await fetch(base+'/api/health')).headers.get('X-Novel-Verification'),'loopback-mock');
+const {base}=await browserFixture(),dir=resolve(process.env.NOVEL_UI_REPORT_DIR||'output/verification/ui-regression'),run=randomUUID().slice(0,8);
 mkdirSync(dir,{recursive:true});
-const {chromium}=await import(pathToFileURL(process.env.NOVEL_PLAYWRIGHT_MODULE).href),{expect}=await import(pathToFileURL(join(process.env.NOVEL_PLAYWRIGHT_MODULE,'../test.mjs')).href);
+const {chromium,expect}=await browserTools();
 const project=withPlans({projectId:`race_${run}`,revision:0,locked:false,active:'brief',fields:{genre:'悬疑',title:`切换并发检验-${run}`,length:'中篇 · 3万字'},content:{},versions:{},chapterProgress:{}});
 const post=await fetch(base+'/api/project',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(project)});assert.equal(post.status,200);
 const read=async()=> (await(await fetch(base+'/api/project?projectId='+project.projectId)).json()).project;
-const before=await read(),browser=await chromium.launch({executablePath:process.env.NOVEL_BROWSER_EXECUTABLE,headless:true}),context=await browser.newContext(),page=await context.newPage();let release;
+const before=await read(),browser=managedBrowser(await chromium.launch({executablePath:process.env.NOVEL_BROWSER_EXECUTABLE,headless:true})),context=await browser.newContext(),page=await context.newPage();let release;
 try{
  await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
  await page.goto(base);await expect(page.locator(`#projectSelect option[value="${project.projectId}"]`)).toBeAttached();

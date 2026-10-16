@@ -17,8 +17,6 @@ jobs:
     env:
       OPENAI_API_KEY: ""
       NOVEL_AUTH_MODE: local
-      PROMPTFOO_DISABLE_TELEMETRY: "1"
-      PROMPTFOO_DISABLE_UPDATE: "1"
     steps:
       - name: Checkout source only
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -31,8 +29,14 @@ jobs:
           package-manager-cache: false
       - name: Install locked dependencies without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Audit all locked dependencies including development and optional packages
+        run: npm run deps:check
       - name: Run isolated mock-model verification
         run: node scripts/verify.mjs
+      - name: Install pinned Chromium for isolated browser verification
+        run: npm run browser:install
+      - name: Run isolated browser clicks without production data
+        run: npm run browser:verify
       - name: Check tracked source boundary
         run: node scripts/check-repository.mjs
       # Deliberately no cache/artifact upload and no production credentials.

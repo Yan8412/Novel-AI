@@ -1,6 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isPathInside } from "../lib/portable-paths.mjs";
+import { browserEnvironment, browserFixture, browserTools, managedBrowser, waitForBrowserFixture } from "../scripts/browser-support.mjs";
+import { EventEmitter } from "node:events";
+test("browser child environment strips credentials and production settings without mutating its parent",()=>{
+  const source={PATH:"tools",OPENAI_API_KEY:"synthetic-only",OPENAI_ADMIN_KEY:"synthetic-only",NOVEL_OUTPUT_DIR:"production",NOVEL_DB_PATH:"production",MODEL_TIMEOUT_MS:"1",ANTHROPIC_API_KEY:"synthetic-only",NODE_OPTIONS:"loader",HTTPS_PROXY:"proxy"};
+  assert.deepEqual(browserEnvironment(source),{PATH:"tools"});assert.equal(source.OPENAI_API_KEY,"synthetic-only");
+});
+test("browser writes reject a non-fixture URL or missing isolated data path",async()=>{
+  for(const url of [undefined,"https://example.test","http://localhost:3000","http://127.0.0.1:3000/path"])
+    await assert.rejects(browserFixture({NOVEL_BROWSER_URL:url}),/isolated loopback/);
+  await assert.rejects(browserFixture({NOVEL_BROWSER_URL:"http://127.0.0.1:3000"}),/isolated fixture directory/);
+});
+test("browser fixture startup cancellation rejects promptly and removes IPC listeners",async()=>{
+  for(const initiallyAborted of [false,true]){
+    const child=new EventEmitter(),controller=new AbortController(),exit=new Promise(()=>{});
+    if(initiallyAborted)controller.abort(new Error("cancelled for test"));
+    const ready=waitForBrowserFixture(child,exit,controller.signal);
+    controller.abort(new Error("cancelled for test"));
+    await assert.rejects(ready,/cancelled for test/);assert.equal(child.listenerCount("message"),0);
+  }
+  const child=new EventEmitter(),controller=new AbortController();
+  await assert.rejects(waitForBrowserFixture(child,Promise.resolve({code:1}),controller.signal),/exited before acceptance/);
+  assert.equal(child.listenerCount("message"),0);
+});
 test("candidate UI pauses before append, restores saved candidates and requires human confirmation",async()=>{
   const js=await readFile(new URL("../public/studio-v2.js",import.meta.url),"utf8");
   for(const marker of ["candidatePanel","candidateOriginal","candidateRevised","candidateEvidence","acceptOriginal","acceptRevised","showCandidate(data.candidate)","confirmReview:true","candidateId:candidate.id"])assert.ok(js.includes(marker),marker);
@@ -11,15 +33,11 @@ test("candidate UI pauses before append, restores saved candidates and requires 
 import { readFile } from "node:fs/promises";
 
 test("real isolated browser clicks candidate decisions, generation, export and reader form",{skip:!process.env.NOVEL_BROWSER_URL,timeout:120000},async()=>{
-  const {pathToFileURL}=await import("node:url"),{join,resolve}=await import("node:path"),{writeFile,mkdir}=await import("node:fs/promises");
-  const {chromium}=await import(pathToFileURL(process.env.NOVEL_PLAYWRIGHT_MODULE).href);
-  const {expect}=await import(pathToFileURL(join(process.env.NOVEL_PLAYWRIGHT_MODULE,"../test.mjs")).href);
-  const base=process.env.NOVEL_BROWSER_URL;
-  assert.match(base,/^http:\/\/127\.0\.0\.1:\d+\/?$/,"Browser QA may only target the isolated loopback fixture service");
-  assert.equal((await fetch(`${base}/api/health`)).headers.get("X-Novel-Verification"),"loopback-mock","Refuse browser writes against a production service");
-  const artifactDir=resolve(process.env.NOVEL_BROWSER_ARTIFACTS);assert.ok(isPathInside(resolve("output/verification"),artifactDir));await mkdir(artifactDir,{recursive:true});
-  const browser=await chromium.launch({executablePath:process.env.NOVEL_BROWSER_EXECUTABLE,headless:true});
+  const {join}=await import("node:path"),{writeFile}=await import("node:fs/promises");
+  const {base,artifacts:artifactDir}=await browserFixture(),{chromium,expect}=await browserTools();
+  const browser=managedBrowser(await chromium.launch({executablePath:process.env.NOVEL_BROWSER_EXECUTABLE,headless:true}));
   const results=[],errors=[],context=await browser.newContext({viewport:{width:1500,height:1000}});let page=await context.newPage();
+  await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
   const project=async id=>(await (await fetch(`${base}/api/project?projectId=${id}`)).json()).project;
   const step=async(name,operation)=>{try{await operation();results.push({name,passed:true});}catch(error){results.push({name,passed:false,error:error.message});throw error;}};
   page.on("pageerror",error=>errors.push(error.message));

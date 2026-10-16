@@ -34,15 +34,18 @@
 
 ## 2. 两个系统使用同一套代码
 
-先安装 `.node-version` 指定的 Node 24.20.0，克隆代码仓库，在项目根目录执行。不要新建单独的 Mac 代码分支来维持两份实现。
+先安装 `.node-version` 指定的 Node 24.20.0 和 Git（确保 `git` 在 PATH 中），克隆代码仓库，在项目根目录执行。不要新建单独的 Mac 代码分支来维持两份实现。
 
 Windows PowerShell：
 
 ```powershell
 node --version
 npm ci --ignore-scripts
+npm run deps:check
 node scripts/install-git-hooks.mjs
 node scripts/verify.mjs
+npm run browser:install
+npm run browser:verify
 $env:OPENAI_MODEL="gpt-6-astra"
 npm start
 ```
@@ -52,8 +55,11 @@ macOS Terminal（zsh）：
 ```zsh
 node --version
 npm ci --ignore-scripts
+npm run deps:check
 node scripts/install-git-hooks.mjs
 node scripts/verify.mjs
+npm run browser:install
+npm run browser:verify
 export OPENAI_MODEL="gpt-6-astra"
 npm start
 ```
@@ -63,6 +69,8 @@ npm start
 默认数据目录是代码根目录下的 `output/`。可以用 `NOVEL_OUTPUT_DIR` 指向仓库外的完整数据目录；默认数据库随之位于 `<数据目录>/platform.sqlite`。如果另外配置了 `NOVEL_DB_PATH`，它会覆盖默认数据库路径，迁移时必须明确核对或取消旧路径，不能误连旧数据库。
 
 `npm start` 的监督进程可在子服务崩溃后重启；注销、重启电脑或监督进程退出后仍须人工启动。`.cmd`/`.vbs` 只服务于 Windows，不用于 Mac。这里没有新增系统级后台启动器或云部署。
+
+浏览器验收使用 npm 锁定版本的 Playwright 与配套 Chromium，自动管理隔离模拟服务和自建数据库，不依赖旧电脑或原 3000 端口。安装浏览器需要网络和磁盘；缺失浏览器或任一步失败时必须视为未通过，不能只看默认测试中被跳过的浏览器项目。可选 `NOVEL_BROWSER_EXECUTABLE` 仅用于有意选择本机其他浏览器，默认不需要机器专用路径。
 
 ## 3. 创建独立加密备份
 
@@ -133,6 +141,8 @@ npm start
 验收清单：
 
 - [ ] Node 版本与备份对应代码版本正确，`node scripts/verify.mjs` 通过。
+- [ ] `npm run deps:check` 完整依赖审计通过；网络错误不等于无漏洞，不能仅审计运行依赖后宣称全部通过。
+- [ ] `npm run browser:install` 与 `npm run browser:verify` 成功，浏览器验收无失败或跳过；这一步使用自建测试数据，不是正式作品恢复结果。
 - [ ] 恢复结果的文件哈希、SQLite 完整性、表计数与作品数量验证通过。
 - [ ] 当前小说列表包含原有作品，切换作品后题材、规划与正文正确且不互相污染。
 - [ ] 每本重点作品的章节数、正文抽样、历史修订、候选稿及任务状态与旧机器一致。
@@ -156,6 +166,6 @@ npm start
 
 Action 固定来源为官方仓库的具体提交：[checkout v6.0.2](https://github.com/actions/checkout/commit/de0fac2e4500dabe0009e67214ff5f5447ce83dd)、[setup-node v6.0.0](https://github.com/actions/setup-node/commit/2028fbc5c25fe9cf00d9f06a71cc4710d4507903)。固定提交便于复核，不意味着以后无需审查安全更新。手动触发前确认 runner 类型及账户费用规则；本次添加工作流不代表已经触发远端任务。公开仓库的 Actions 日志也应按公开内容处理，不注入生产凭据或作品数据。
 
-普通回归没有浏览器运行环境时会明确跳过真实浏览器场景。Mac CI 通过只能证明该 runner 的测试结果，还需目标 Mac 的浏览器、文件恢复和手工使用验收；Apple Silicon 硬件性能也不是矩阵测试自动证明的结论。
+普通回归会明确跳过单独执行的真实浏览器场景；完整验收还要安装配套 Chromium 并运行 `npm run browser:verify`。Mac CI 通过只能证明该 runner 的测试结果，还需目标 Mac 的浏览器、文件恢复和手工使用验收；Apple Silicon 硬件性能也不是矩阵测试自动证明的结论。
 
 此方案面向“更换电脑”。若要 Windows 与 Mac 同时编辑同一本小说，应设计统一后端、认证和访问权限，而不是把活动数据库放入 Git、iCloud 或 OneDrive 同步目录。

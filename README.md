@@ -1,6 +1,6 @@
 # 折光故事工坊
 
-一个本地中文小说创作与训练数据准备工作台。网页按“需求解析 → 故事圣经 → 全书大纲 → 场景规划 → 正文写作 → 一致性审校 → 分支与修订”工作；生成请求由本地 Node 服务转发到 OpenAI Responses API。项目还提供持久化长期记忆、显式授权的数据集、微调/续训数据包、调用指标和基础漂移告警。运行时使用 `diff@9.0.0`，开发评测使用 `promptfoo@0.123.1`；版本及间接依赖由锁文件固定。
+一个本地中文小说创作与训练数据准备工作台。网页按“需求解析 → 故事圣经 → 全书大纲 → 场景规划 → 正文写作 → 一致性审校 → 分支与修订”工作；生成请求由本地 Node 服务转发到 OpenAI Responses API。项目还提供持久化长期记忆、显式授权的数据集、微调/续训数据包、调用指标和基础漂移告警。运行时使用 `diff@9.0.0`，固定离线评测使用 Node 原生断言，浏览器验收使用 `@playwright/test@1.64.1`；版本及间接依赖由锁文件固定。
 
 唯一活动入口是 `server.mjs + public/`。旧 Next/Vite/Sites 原型仅保留在原电脑的 `archive/legacy-next-sites/`，不入库、不参与运行、测试或构建。
 
@@ -10,6 +10,7 @@
 
 - 固定使用 `.node-version` 中的 **Node.js 24.20.0**；使用内置 `node:sqlite`。其他版本尚未纳入本次复现基线
 - 使用 npm 和 `package-lock.json` 安装；本地旧 pnpm 文件保留但不入库，不作为受支持安装路径
+- 安装 Git 并确保 `git` 在 PATH 中；新克隆执行 `node scripts/install-git-hooks.mjs`，钩子不会随克隆自动启用
 - 只有真实模型生成需要可用的 `OPENAI_API_KEY`；页面编辑与模拟回归不需要密钥
 - 默认模型为 GPT-6 Astra（`gpt-6-astra`），可通过 `OPENAI_MODEL` 修改；现有环境变量优先于默认值
 
@@ -51,6 +52,7 @@ Windows 用户也可以双击 `start-novel-studio.cmd`。该脚本会读取通�
 
 ```powershell
 npm run check
+npm run deps:check
 npm test
 npm run eval
 npm run build
@@ -60,13 +62,17 @@ node scripts/verify.mjs
 
 回归不调用真实模型：API 测试使用回环地址的模拟服务，平台单元测试使用内存 SQLite。API 测试生成的数据作为正式验证记录保存在 `output/verification/api-<运行ID>/`，不写入用户小说目录，不创建临时脚本；`tests/planning-fixtures.mjs` 是永久回归样例，不参与生产生成。
 
+依赖安全更新（2026-10-17）：经用户确认，固定离线评测改用 Node 原生执行器，保留原有样例、断言和报告，不再安装 Promptfoo 或提供其 CLI。这样从依赖树与锁文件移除 `promptfoo → jks-js → node-forge` 风险链，也移除已无使用者的 `basic-ftp` 强制版本配置；不是修补 Forge、伪造包版本或忽略开发/可选依赖。[上游 JKS 调整](https://github.com/promptfoo/promptfoo/pull/11739) 已合并但检查时尚未发布 npm 稳定版；[Forge 公告](https://github.com/advisories/GHSA-86w9-cpqp-85rv) 仍无正式修复版。新的隔离安装完整审计为 0，运行时 `diff` 和浏览器验收版本未变。
+
+`npm run deps:check` 显式包含开发、可选与 peer 依赖，任何已知等级漏洞均返回非零退出码；手动 CI 也执行同一检查。此命令需要访问 npm 安全公告服务，网络/服务错误不是通过；`node scripts/verify.mjs` 保持离线，不能代替依赖审计。审计为 0 仅代表当时公告库中未报告风险，不保证没有未知漏洞；不要直接执行 `npm audit fix --force`，未来引入新依赖仍须完整审计与回归。
+
 `.github/workflows/verify.yml` 提供 Windows/macOS 矩阵，固定官方 Action 提交，只能手动触发 `workflow_dispatch`，不会因提交或推送自动运行。它运行 `node scripts/verify.mjs`，不上传 `output/` 或 artifact、不配置生产密钥、不执行真实模型调用。实际触发前应确认 GitHub Actions 额度；仓库中存在此文件不代表 Mac 已通过验收。本次跨平台代码准备与 Windows 回归不能代替 Mac 实机、浏览器和迁移验收。
 
-`npm run build` 会创建可复制运行的 `dist/`，其中包含服务端、静态网页、`diff` 运行依赖及最小 `package.json`，不包含庞大的 Promptfoo 开发依赖。在 `dist/` 中执行 `npm start` 即可运行。构建只更新程序文件，不删除部署目录中已有的小说。
+`npm run build` 会创建可复制运行的 `dist/`，其中包含服务端、静态网页、`diff` 运行依赖及最小 `package.json`，不包含浏览器验收开发依赖。在 `dist/` 中执行 `npm start` 即可运行。构建只更新程序文件，不删除部署目录中已有的小说。
 
 ### 固定评测与可复现实验
 
-- `npm run eval` 使用 Promptfoo 的本地 provider 检查 10 个编辑验收案例，目标固定 2500 字，自动定稿范围 2200–2800 字；记录模型、相同前文/章节卡/原稿及旧新提示词的 SHA-256。禁用遥测、更新查询、缓存和网络调用，`paidCalls=0`。这些是工程护栏回归，不是生成小说的文学对照结果。
+- `npm run eval` 使用 Node 原生断言检查同一组 10 个编辑验收案例，目标固定 2500 字，自动定稿范围 2200–2800 字；记录模型、相同前文/章节卡/原稿及旧新提示词的 SHA-256。报告保留 `summary.stats` 计数、逐案例实际值/期望值以及事实、检索结果，并明确标识原生执行器，不冒充 Promptfoo 专有报告格式。空案例、非法输入、断言不符或执行异常均不能作为通过结果。没有遥测、更新查询或缓存，禁止网络调用，`paidCalls=0`。这些是工程护栏回归，不是生成小说的文学对照结果。
 - 同一命令比较旧抽取基线与新证据规则的 13 个固定案例，以及 4 个基于真实本地哈希向量的实体别名检索案例；`results.json`、`facts.json`、`memory.json`、`memory-inputs.json` 保存于 `output/verification/eval-<时间>/`。固定开发集存在选择偏差，不能把通过率当真实全文准确率。
 - `node scripts/evaluate.mjs --bge-artifact <文件> --extraction-artifact <文件>` 可离线评估外部实验产物，两项均可省略。BGE 文件须有 `model: "BAAI/bge-m3"`、`dimension:1024`、按 `memory-inputs.json` 顺序排列的 `vectors:[{sourceHash,vector}]`；抽取文件为 `[{id,extraction:{sourceHash,observations}}]`。观察项必须包含 `start/end/evidence/category/subject/predicate/object/time/modality`，偏移按 UTF-16，原文必须精确匹配。实验只评分，不自动启用生产路径。
 - 默认生产路径仍使用证据规则和哈希/别名检索；普通离线评测未提供外部产物时记录 `NOT_RUN`。2026-10-02 已单独完成真实 LangExtract 1.7.0 + GPT-6 Astra 抽取、BGE-M3 ONNX INT8 下载与 CPU 推理，未替换生产路径。见下方“真实记忆实验”；这不代表完整精度 BGE 或文学效果已经验证。
@@ -149,15 +155,19 @@ SOFTWARE.
 
 本次浏览器证据位于 `output/verification/api-f65db5ab-09ad-4a14-b371-6b76b1722032/browser-results.json`，截图为同目录 `candidate-comparison.png`、`reader-form-qa.png` 和 `browser-final.png`。这些样本和表单答案均为明确标注的隔离测试数据，不是文学样本或真实读者反馈。真实模型格式兼容性、中文文学效果、读者盲评和实际账单费用仍待另行验证。
 
-真实浏览器回归已保存在 `tests/rendered-html.test.mjs`，普通 `npm test` 会跳过这一个需要浏览器的测试。复现时先启动一套新的 `NOVEL_BROWSER_VERIFY=1` API 测试服务，再在另一个 PowerShell 设置以下变量并运行；URL 和证据目录必须使用该次 API 测试实际打印的值。测试会校验隔离服务专用响应头，拒绝操作生产网页；每次重跑需新的隔离数据，不能复用已定稿的测试项目。
+真实浏览器验收使用锁定的 `@playwright/test` 和其配套 Chromium，不需要旧机器的 Playwright 目录、Edge 路径、数据库或正在运行的网页。Windows PowerShell 与 macOS Terminal 使用相同命令：
 
-```powershell
-$env:NOVEL_BROWSER_URL="http://127.0.0.1:该次测试端口"
-$env:NOVEL_BROWSER_ARTIFACTS=Join-Path (Get-Location) "output/verification/api-该次运行ID"
-$env:NOVEL_PLAYWRIGHT_MODULE="<已安装的 Playwright 目录>/index.mjs"
-$env:NOVEL_BROWSER_EXECUTABLE="C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-node --test --test-name-pattern="real isolated browser" tests/rendered-html.test.mjs
+```text
+npm ci --ignore-scripts
+node scripts/install-git-hooks.mjs
+node scripts/verify.mjs
+npm run browser:install
+npm run browser:verify
 ```
+
+`browser:install` 下载当前锁定版本对应的 Chromium，需要网络和磁盘空间，不读取日常浏览器配置。`browser:verify` 自动启动独立回环模拟服务、创建新的测试数据库，顺序执行候选定稿、工作台、边界、切换竞争及训练准备的浏览器流程，并关闭本次服务。模型凭据不会传入测试子进程，浏览器请求限制到测试服务；不访问原 3000 端口或根 `output/platform.sqlite`，不执行远程生成或训练。
+
+普通 `npm test` 仍会明确跳过需要浏览器的那一项，因此完整验收必须另外运行 `npm run browser:verify`。缺少浏览器、服务启动失败或任一点击断言失败会返回非零退出码，不能解释为通过。日志、结果和截图保存在 `output/verification/` 的本次独立目录中。自动填写的盲评答案只是测试夹具，不是真实读者评价。
 
 文学盲评验收口径：同一组必须共用设定、前文、章节卡、模型、原始候选和篇幅目标，比较旧编辑与中文小说新编辑，而非把未经编辑的初稿充当旧流程。隐藏版本来源并随机排列；由真实读者提交继续阅读偏好、人物声音、情节理解、伏笔保留和修改意见。两个样本组只能发现案例层面的收益或损伤，不能据此宣称总体提升比例或统计显著。没有真实回答时响应数必须为 0，不用模型评分或自动化表单提交代替。
 

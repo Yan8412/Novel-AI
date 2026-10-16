@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdir,writeFile,readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { EVALUATION_CONTRACT,editorialCases,editorialInput } from "../tests/evaluation-fixtures.mjs";
-import { assessChapterEdit,buildChapterEditPrompt } from "../public/novel-core.mjs";
+import { buildChapterEditPrompt } from "../public/novel-core.mjs";
+import { evaluateEditorialCases } from "../lib/editorial-evaluation.mjs";
 import { legacyEditorPrompt } from "./compare-editors.mjs";
 import { extractChapter,validateGroundedExtraction } from "../lib/story-evidence.mjs";
 import { rankMemory,validateEmbeddingArtifact } from "../lib/memory-retrieval.mjs";
@@ -11,16 +12,10 @@ import { chapterExtraction } from "../tests/legacy-extraction.mjs";
 import { factCases,factVerdict,retrievalCases } from "../tests/fact-fixtures.mjs";
 
 // This command is intentionally offline. Real reader/paid trials are separate.
-process.env.PROMPTFOO_DISABLE_TELEMETRY="1";
-process.env.PROMPTFOO_DISABLE_UPDATE="1";
-process.env.PROMPTFOO_CACHE_ENABLED="false";
 const directory=join(process.cwd(),"output","verification",`eval-${new Date().toISOString().replace(/[:.]/g,"-")}`);
-await mkdir(directory,{recursive:true});process.env.PROMPTFOO_CONFIG_DIR=directory;
+await mkdir(directory,{recursive:true});
 globalThis.fetch=async()=>{throw new Error("离线评测禁止网络调用");};
-const {default:promptfoo}=await import("promptfoo");
-const provider={id:()=>"novel-offline-gate",callApi:async(_prompt,context)=>{const sample=editorialCases.find(c=>c.id===context.vars.caseId),input=editorialInput(sample);return {output:assessChapterEdit(input.original,input.review,input.card).status};}};
-const result=await promptfoo.evaluate({description:"小说固定工程评测，不代表文学效果",prompts:["{{caseId}}"],providers:[provider],tests:editorialCases.map(c=>({description:c.id,vars:{caseId:c.id},assert:[{type:"equals",value:c.expected}]})),writeLatestResults:false},{maxConcurrency:1,cache:false});
-const summary=await result.toEvaluateSummary();
+const summary=evaluateEditorialCases(editorialCases,editorialInput);
 const sample=editorialInput(editorialCases[0]),project={fields:{genre:"悬疑",styleCard:"保留克制对白与悬疑留白"}};
 const hash=value=>createHash("sha256").update(value).digest("hex");
 const report={contract:EVALUATION_CONTRACT,fixturesSha256:hash(await readFile(new URL("../tests/evaluation-fixtures.mjs",import.meta.url))),comparison:{originalSha256:hash(sample.original),chapterCard:sample.card,oldPromptSha256:hash(legacyEditorPrompt(project,sample.card,sample.original)),newPromptSha256:hash(buildChapterEditPrompt(project,sample.card,sample.original,[])),paidCalls:0,literaryEffect:"UNVERIFIED"},summary};

@@ -2,16 +2,14 @@
 import assert from 'node:assert/strict';
 import {mkdirSync,writeFileSync} from 'node:fs';
 import {join,resolve} from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {browserFixture,browserTools,managedBrowser} from './browser-support.mjs';
 import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {withPlans,draftFixture} from '../tests/planning-fixtures.mjs';
-import {isPathInside} from '../lib/portable-paths.mjs';
-const base=process.env.NOVEL_BROWSER_URL,dir=resolve(process.env.NOVEL_UI_REPORT_DIR||'output/verification/ui-regression'),run=randomUUID().slice(0,8);
+const {base,artifacts}=await browserFixture(),dir=resolve(process.env.NOVEL_UI_REPORT_DIR||'output/verification/ui-regression'),run=randomUUID().slice(0,8);
 mkdirSync(dir,{recursive:true});
-assert.match(base,/^http:\/\/127\.0\.0\.1:\d+$/);assert.equal((await fetch(base+'/api/health')).headers.get('X-Novel-Verification'),'loopback-mock');
-const dbPath=resolve(process.env.NOVEL_BROWSER_ARTIFACTS,'platform.sqlite');assert.ok(isPathInside(resolve('output/verification'),dbPath));
-const {chromium}=await import(pathToFileURL(process.env.NOVEL_PLAYWRIGHT_MODULE).href),{expect}=await import(pathToFileURL(join(process.env.NOVEL_PLAYWRIGHT_MODULE,'../test.mjs')).href);
+const dbPath=join(artifacts,'platform.sqlite');
+const {chromium,expect}=await browserTools();
 const results=[],pageErrors=[];async function api(path,body){const r=await fetch(base+path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});const data=await r.json();assert.ok(r.ok,JSON.stringify(data));return data;}
 const make=suffix=>withPlans({projectId:`edge_${run}_${suffix}`,revision:0,locked:false,active:'brief',fields:{genre:'悬疑',title:`边界检验-${suffix}-${run}`,length:'中篇 · 3万字'},content:{},versions:{},chapterProgress:{}});
 const retry=make('retry'),pause=make('pause'),intent=make('intent'),switcher=make('switch'),memory={...make('empty'),content:{},planning:undefined};
@@ -19,7 +17,7 @@ for(const p of [retry,pause,intent,switcher,memory])await api('/api/project',p);
 // Seed persisted failure/running states as test fixtures, then exercise real UI and worker.
 const db=new DatabaseSync(dbPath);const seedJob=(p,status,count)=>{const id=randomUUID(),now=new Date().toISOString();db.prepare('INSERT INTO generation_jobs(id,project_id,user_id,status,requested_chapters,completed_chapters,start_chapter,next_chapter,expected_revision,last_error,created_at,updated_at) VALUES(?,?,?,?,?,0,1,1,1,?,?,?)').run(id,p.projectId,'local-owner',status,count,'明确标注的隔离任务状态样例',now,now);return id;};
 seedJob(retry,'failed',1);seedJob(pause,'running',2);db.close();
-const browser=await chromium.launch({executablePath:process.env.NOVEL_BROWSER_EXECUTABLE,headless:true}),context=await browser.newContext({viewport:{width:1500,height:1000}}),page=await context.newPage();page.setDefaultTimeout(9000);page.on('pageerror',e=>pageErrors.push(e.message));
+const browser=managedBrowser(await chromium.launch({executablePath:process.env.NOVEL_BROWSER_EXECUTABLE,headless:true})),context=await browser.newContext({viewport:{width:1500,height:1000}}),page=await context.newPage();page.setDefaultTimeout(9000);page.on('pageerror',e=>pageErrors.push(e.message));
 await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
 const save=()=>writeFileSync(join(dir,`edge-results-${run}.json`),JSON.stringify({run,base,model:'loopback-mock',paidCalls:0,results,pageErrors},null,2));
 async function step(name,fn){try{results.push({name,status:'PASS',evidence:await fn()});console.log('PASS '+name);}catch(e){results.push({name,status:'FAIL',error:e.message});console.log('FAIL '+name+' '+e.message.slice(0,500));await page.screenshot({path:join(dir,`edge-failure-${run}-${results.length}.png`)});if(await page.locator('#confirmModal').isVisible())await page.locator('#confirmCancel').click();}save();}

@@ -1,29 +1,22 @@
 // Persistent diagnostic evidence. Operates only against the loopback-mock test service.
 import assert from 'node:assert/strict';
-import {mkdirSync,readFileSync,writeFileSync,readdirSync,existsSync} from 'node:fs';
+import {mkdirSync,readFileSync,writeFileSync,existsSync} from 'node:fs';
 import {join,resolve} from 'node:path';
-import {pathToFileURL} from 'node:url';
-import {createHash,randomUUID} from 'node:crypto';
-import {DatabaseSync} from 'node:sqlite';
+import {randomUUID} from 'node:crypto';
+import {browserFixture,browserTools,managedBrowser} from './browser-support.mjs';
 import {withPlans,draftFixture} from '../tests/planning-fixtures.mjs';
 import {GENRES,LENGTH_OPTIONS,MODULES} from '../public/novel-core.mjs';
-const base=process.env.NOVEL_BROWSER_URL,dir=resolve(process.env.NOVEL_UI_REPORT_DIR||'output/verification/ui-regression');
+const {base}=await browserFixture(),dir=resolve(process.env.NOVEL_UI_REPORT_DIR||'output/verification/ui-regression');
 mkdirSync(dir,{recursive:true});
-assert.match(base,/^http:\/\/127\.0\.0\.1:\d+$/);
-assert.equal((await fetch(base+'/api/health')).headers.get('X-Novel-Verification'),'loopback-mock');
-const {chromium}=await import(pathToFileURL(process.env.NOVEL_PLAYWRIGHT_MODULE).href);
-const {expect}=await import(pathToFileURL(join(process.env.NOVEL_PLAYWRIGHT_MODULE,'../test.mjs')).href);
+const {chromium,expect}=await browserTools();
 const run=randomUUID().slice(0,8),results=[],pageErrors=[],httpErrors=[],controls=new Set(),network=[],observations=[];
 const save=()=>writeFileSync(join(dir,`results-${run}.json`),JSON.stringify({run,base,model:'local mock',paidCalls:0,realReaderResponses:0,results,pageErrors,httpErrors,network,controls:[...controls],observations},null,2));
 async function api(path,body){const r=await fetch(base+path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});const data=await r.json();assert.ok(r.ok,`${path}: ${r.status} ${JSON.stringify(data)}`);return data;}
 const getProject=id=>api('/api/project?projectId='+id).then(d=>d.project);
-function snapshot(){const walk=p=>existsSync(p)?readdirSync(p,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(join(p,e.name)):[join(p,e.name)]):[];const files=walk('output/projects').map(path=>({path,sha256:createHash('sha256').update(readFileSync(path)).digest('hex')}));const db=new DatabaseSync('output/platform.sqlite',{readOnly:true});try{return{files,modelCalls:db.prepare('SELECT count(*) n FROM model_calls').get().n,jobs:db.prepare('SELECT id,status FROM generation_jobs ORDER BY id').all()};}finally{db.close();}}
-const before=snapshot();writeFileSync(join(dir,'production-before.json'),JSON.stringify(before,null,2));
-const production=[];for(const path of ['/','/studio-v2.js','/novel-core.mjs','/diff-view.mjs','/reader.html','/reader.js','/api/status','/api/health','/api/platform/status','/api/metrics']){try{const r=await fetch('http://127.0.0.1:3000'+path,{signal:AbortSignal.timeout(10000)}),text=await r.text();production.push({path,status:r.status,bytes:Buffer.byteLength(text),...(path==='/api/status'?JSON.parse(text):{})});}catch(e){production.push({path,error:e.message});}}writeFileSync(join(dir,'production-http.json'),JSON.stringify(production,null,2));
 const fresh=(suffix,content={})=>({projectId:`qa_${run}_${suffix}`,revision:0,locked:false,active:'brief',fields:{genre:'悬疑',title:`网页隔离检验-${suffix}-${run}`,premise:'自建测试片段，不是真实小说',length:'中篇 · 3万字',tone:'',pov:'',pace:'',constraints:'',styleCard:''},content,versions:{},chapterProgress:{}});
 const inputs=fresh('inputs'),flow=fresh('flow'),versions=withPlans(fresh('versions',{draft:draftFixture(1),review:'测试审校证据',branch:'未采纳的测试分支'}));
 for(const p of [inputs,flow,versions])await api('/api/project',p);
-const browser=await chromium.launch({executablePath:process.env.NOVEL_BROWSER_EXECUTABLE,headless:true});
+const browser=managedBrowser(await chromium.launch({executablePath:process.env.NOVEL_BROWSER_EXECUTABLE,headless:true}));
 const context=await browser.newContext({viewport:{width:1500,height:1000}});
 await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
 const page=await context.newPage();page.setDefaultTimeout(8000);
@@ -78,7 +71,7 @@ try{
  await page.setViewportSize({width:1500,height:1000});await page.screenshot({path:join(dir,'desktop.png'),fullPage:true});
  observations.push({remainingControls:await page.locator('button,input,select,textarea,a,summary').evaluateAll(es=>es.map(e=>({tag:e.tagName,id:e.id,field:e.dataset.f||null,text:(e.innerText||e.getAttribute('aria-label')||'').slice(0,80),disabled:e.disabled||false,visible:!!e.getClientRects().length}))),sidebarMemory:await page.locator('.memory').innerText()});
 }finally{
- const after=snapshot();writeFileSync(join(dir,'production-after.json'),JSON.stringify(after,null,2));observations.push({productionUnchanged:JSON.stringify(before)===JSON.stringify(after)});save();await context.close();await browser.close();
+ save();await context.close();await browser.close();
 }
 console.log(JSON.stringify({run,passed:results.filter(r=>r.status==='PASS').length,failed:results.filter(r=>r.status==='FAIL').length,pageErrors,artifacts:dir}));
 process.exitCode=results.some(item=>item.status==="FAIL")||pageErrors.length?1:0;

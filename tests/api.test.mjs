@@ -120,13 +120,19 @@ before(async () => {
 });
 after(async () => {
   if(process.env.NOVEL_BROWSER_VERIFY==="1"){
-    console.log(`浏览器隔离验收服务：${base}；PID ${process.pid}；模型请求仅转发本机模拟服务。按 Ctrl+C 结束。`);
-    await new Promise(resolve=>process.once("SIGINT",resolve));
+    console.log(`浏览器隔离验收服务：${base}；PID ${process.pid}；模型请求仅转发本机模拟服务。`);
+    await new Promise(resolve=>{
+      const finish=()=>{process.off("SIGINT",finish);process.off("SIGTERM",finish);process.off("disconnect",finish);process.off("message",message);resolve();};
+      const message=value=>{if(value?.type==="stop-browser-fixture")finish();};
+      process.once("SIGINT",finish);process.once("SIGTERM",finish);process.once("disconnect",finish);process.on("message",message);
+      process.send?.({type:"browser-fixture-ready",base,output});
+    });
   }
   await Promise.all([new Promise(resolve=>app.close(resolve)),new Promise(resolve=>upstream.close(resolve))]);
   platformStore.close();
 
   delete process.env.NOVEL_OUTPUT_DIR; delete process.env.NOVEL_DB_PATH; delete process.env.OPENAI_API_KEY; delete process.env.OPENAI_BASE_URL;
+  if(process.connected)process.disconnect();
 });
 
 const project={projectId:"project_test_01",revision:0,locked:false,fields:{genre:"科幻",title:"测试",premise:"",pov:"",length:"",pace:"",tone:"",constraints:""},content:{}};
