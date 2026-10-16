@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { randomUUID,createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { GenerationWorker } from "./lib/generation-worker.mjs";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -50,6 +51,7 @@ const chapterEditAuditFormat={type:"json_schema",name:"chapter_edit_audit",stric
 },required:["approved","checks","issues","summary"]}};
 const saveQueues = new Map();
 const durableCalls=new AsyncLocalStorage(),durableInFlight=new Map();
+const modelShutdown=new AbortController();
 export const platformStore = new PlatformStore({ dbPath:process.env.NOVEL_DB_PATH || join(outputDir, "platform.sqlite") });
 let activeModelCalls=0;
 const modelWaiters=[];
@@ -77,10 +79,12 @@ function requireProjectAccess(projectId,user,{ claim=false }={}) {
 }
 
 async function withModelSlot(operation) {
+  modelShutdown.signal.throwIfAborted();
   if (activeModelCalls>=maxConcurrentModels) {
     if (modelWaiters.length>=maxModelQueue) throw new HttpError(429, "模型请求队列已满，请稍后重试", { code:"MODEL_QUEUE_FULL" });
     await new Promise(resolve=>modelWaiters.push(resolve));
   }
+  modelShutdown.signal.throwIfAborted();
   activeModelCalls++;
   try { return await operation(); }
   finally { activeModelCalls--; modelWaiters.shift()?.(); }
@@ -412,7 +416,7 @@ export function usageMetrics(data,latencyMs,retries) {
   return { model,inputTokens,outputTokens,cachedTokens,cacheWriteTokens,serviceTier:tier,costUsd:Math.round(costUsd*1e8)/1e8,latencyMs,retries,requestId:data.id || null,priceSnapshotDate };
 }
 
-const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const wait = ms => delay(ms,undefined,{signal:modelShutdown.signal}).catch(error=>{modelShutdown.signal.throwIfAborted();throw error;});
 
 function modelRetryDelay(attempt) {
   const base=Math.max(10,Number(process.env.MODEL_RETRY_BASE_MS || 1_500));
@@ -422,8 +426,8 @@ function modelRetryDelay(attempt) {
 async function fetchModelJson(url,options,timeoutMs) {
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),timeoutMs);
   try {
-    const response=await fetch(url,{...options,signal:controller.signal});
-    const data=await response.json().catch(()=>({}));
+    const response=await fetch(url,{...options,signal:AbortSignal.any([controller.signal,modelShutdown.signal])});
+    const data=await response.json().catch(error=>{modelShutdown.signal.throwIfAborted();return {};});
     return { response,data };
   } finally { clearTimeout(timeout); }
 }
@@ -451,6 +455,7 @@ async function pollBackgroundModel(initial,apiKey,mode,observeResponse=()=>{}) {
       data=result.data;
       failures=0;
     } catch (error) {
+      modelShutdown.signal.throwIfAborted();
       if (error instanceof HttpError) throw error;
       failures+=1; pollRetries+=1;
       console.warn("model poll failed",{ mode,responseId:data.id,failures,name:error?.name,code:error?.cause?.code,status:error?.status });
@@ -466,6 +471,7 @@ async function callModelRaw(mode, input, maxTokens=maxOutputTokens[mode], maxAtt
   if (!apiKey) throw new HttpError(503, "未配置 OPENAI_API_KEY，无法调用模型");
   let lastFailure={ code:"MODEL_EMPTY_OUTPUT", message:"模型未返回文本内容" };
   for (let attempt=1; attempt<=maxAttempts; attempt++) {
+    modelShutdown.signal.throwIfAborted();
     let upstream,data;const attemptStarted=Date.now();
     const attemptMaxTokens=Math.min(8000,Math.ceil(maxTokens*(1+0.5*(attempt-1))));
     try {
@@ -489,6 +495,7 @@ async function callModelRaw(mode, input, maxTokens=maxOutputTokens[mode], maxAtt
       if(context.operationId)platformStore.saveModelOperation(context.operationId,context.projectId,mode,"responded",{data});
       context.observeResponse?.({stage:"create",httpStatus:upstream.status,httpRequestId:upstream.headers.get("x-request-id"),data});
     } catch (error) {
+      modelShutdown.signal.throwIfAborted();
       observeAttempt({attempt,status:error?.name === "AbortError" ? "connect_timeout" : "connection_failed",data:null,latencyMs:Date.now()-attemptStarted,outputCap:attemptMaxTokens});
       lastFailure=error?.name === "AbortError" ? { code:"MODEL_CONNECT_TIMEOUT",message:"创建模型后台任务超时" } : { code:"MODEL_CONNECTION_FAILED",message:"模型连接中断" };
       if(context.operationId)throw new HttpError(409,"模型连接中断，创建结果待确认；未自动重复提交以避免重复费用",{code:"MODEL_RESULT_UNKNOWN"});
@@ -552,6 +559,7 @@ async function callModelRaw(mode, input, maxTokens=maxOutputTokens[mode], maxAtt
 }
 
 export async function callModel(mode,input,maxTokens=maxOutputTokens[mode],maxAttempts=2,context={}) {
+  modelShutdown.signal.throwIfAborted();
   if(durableCalls.getStore()&&!context.operationId){
     const id=createHash("sha256").update(JSON.stringify([context.userId,context.projectId,process.env.OPENAI_BASE_URL,process.env.OPENAI_MODEL||defaultModel,mode,input,maxTokens])).digest("hex");
     if(durableInFlight.has(id))return durableInFlight.get(id);
@@ -564,6 +572,7 @@ export async function callModel(mode,input,maxTokens=maxOutputTokens[mode],maxAt
         const result=await callModel(mode,input,maxTokens,1,{...context,operationId:id});
         platformStore.saveModelOperation(id,context.projectId,mode,"completed",{result});return result;
       }catch(error){
+        modelShutdown.signal.throwIfAborted();
         const current=platformStore.modelOperation(id);
         if(current?.data&&!['queued','in_progress'].includes(current.data.status))platformStore.saveModelOperation(id,context.projectId,mode,"failed",{data:current.data,error:error.message});
         throw error;
@@ -694,6 +703,7 @@ async function generateData(payload,user) {
         calls.push(checked.metrics);audit=parseChapterEditAudit(checked.content,originalText,chapterReview.revisedText);
       }
     }catch(error){
+      modelShutdown.signal.throwIfAborted();
       if(error.metrics)calls.push(error.metrics);
       chapterReview.approved=false;chapterReview.summary=`编辑/语义复核未完成（${error.details?.code||"MODEL_ERROR"}），候选稿已保留，请人工复核或重新生成。`;
     }
@@ -875,6 +885,7 @@ export const generationWorker=new GenerationWorker({store:platformStore,readProj
   generate:(payload,user)=>durableCalls.run(true,()=>generateData(payload,user)),append:appendChapterData});
 export const server = createServer(async (req, res) => {
   try {
+    modelShutdown.signal.throwIfAborted();
     const url = new URL(req.url, "http://localhost");
     if (req.method === "POST" && url.pathname === "/api/generate") return await generate(req, res);
     if (req.method === "POST" && url.pathname === "/api/completion") return await checkCompletion(req, res);
@@ -921,6 +932,17 @@ export const server = createServer(async (req, res) => {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   server.listen(port, host, () => console.log(`折光故事工坊：http://${host}:${server.address().port}`));
-  const shutdown=signal=>server.close(async()=>{await generationWorker.stop();platformStore.close();console.log(`服务已收到 ${signal} 并安全退出`);process.exit(0);});
+  let stopping=false;
+  const shutdown=signal=>{
+    if(stopping)return;stopping=true;
+    const workers=generationWorker.stop();
+    // Cancel local transport only. Durable response IDs/unknown submissions stay
+    // persisted; never cancel or re-submit the provider's accepted task here.
+    modelShutdown.abort(new HttpError(503,"服务停止后等待继续",{code:"SERVICE_STOPPING"}));
+    modelWaiters.splice(0).forEach(resolve=>resolve());
+    Promise.all([workers,new Promise(resolve=>server.close(resolve))]).then(()=>{
+      platformStore.close();console.log(`服务已收到 ${signal} 并安全退出`);process.exit(0);
+    }).catch(error=>{console.error("服务退出失败",error.message);process.exit(1);});
+  };
   process.once("SIGINT",()=>shutdown("SIGINT"));process.once("SIGTERM",()=>shutdown("SIGTERM"));
 }

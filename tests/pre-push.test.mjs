@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp,mkdir,writeFile,readFile,cp,rm } from "node:fs/promises";
+import { mkdtemp,mkdir,writeFile,readFile,cp,rm,symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname,join } from "node:path";
 import { fileURLToPath,pathToFileURL } from "node:url";
@@ -198,4 +198,25 @@ test("installer is idempotent and refuses to overwrite an existing hook or hooks
   git(repo,"config","--local","core.hooksPath","other-hooks");result=command(repo,process.execPath,["scripts/install-git-hooks.mjs"]);assert.notEqual(result.status,0);
   assert.equal(git(repo,"config","--local","core.hooksPath"),"other-hooks");git(repo,"config","--local","--unset","core.hooksPath");
   for(let index=0;index<2;index++){result=command(repo,process.execPath,["scripts/install-git-hooks.mjs"]);assert.equal(result.status,0,result.stderr+result.stdout);}
+});
+
+test("installer accepts a Windows case alias for the repository root",{skip:process.platform!=="win32"},async t=>{
+  const {repo}=await fixture(t,{install:false});
+  const alias=repo.toUpperCase();assert.notEqual(alias,repo);
+  const result=command(alias,process.execPath,["scripts/install-git-hooks.mjs"]);
+  assert.equal(result.status,0,result.stderr+result.stdout);
+  assert.equal(git(repo,"config","--local","core.hooksPath"),".githooks");
+});
+
+test("installer accepts a directory-link alias but rejects a repository subdirectory",async t=>{
+  const {repo,root}=await fixture(t,{install:false});
+  const alias=join(root,"repository-link");
+  await symlink(repo,alias,process.platform==="win32"?"junction":"dir");
+  const nested=join(repo,"scripts"),installer=join(repo,"scripts/install-git-hooks.mjs");
+  let result=command(nested,process.execPath,[installer]);
+  assert.notEqual(result.status,0);assert.match(result.stderr,/Run from the repository root/);
+  assert.equal(command(repo,"git",["config","--local","--get","core.hooksPath"]).status,1);
+  result=command(alias,process.execPath,["scripts/install-git-hooks.mjs"]);
+  assert.equal(result.status,0,result.stderr+result.stdout);
+  assert.equal(git(repo,"config","--local","core.hooksPath"),".githooks");
 });

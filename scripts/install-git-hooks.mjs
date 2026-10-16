@@ -1,11 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { chmodSync, existsSync, readdirSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 
 try {
   const git=args=>execFileSync("git",args,{encoding:"utf8",windowsHide:true,stdio:["pipe","pipe","pipe"]}).trim();
   const root=git(["rev-parse","--show-toplevel"]);
-  if(resolve(root)!==resolve(process.cwd()))throw new Error("Run from the repository root.");
+  if(realpathSync.native(root)!==realpathSync.native(process.cwd()))throw new Error("Run from the repository root.");
   const configured=spawnSync("git",["config","--get","core.hooksPath"],{encoding:"utf8",windowsHide:true});
   if(![0,1].includes(configured.status))throw new Error("Cannot inspect hooks configuration.");
   if(configured.status===0&&configured.stdout.trim()!==".githooks")throw new Error("Existing hooksPath is preserved; review it before installing.");
